@@ -61,8 +61,8 @@ RULES:
 - Return only one sentence.
 
 Choose one of the following:
-- Please introduce yourself.
 - Tell me about yourself.
+- Please introduce yourself.
 - Could you briefly introduce yourself?
 
 Return only the question text.
@@ -106,7 +106,7 @@ If the generated question is too similar to any previous question, regenerate it
 }
 
 function buildFeedbackPrompt(role, experience, question, answer) {
-  return `You are an expert interviewer evaluating a ${role} candidate with ${experience} experience.\n\nQuestion: ${question}\nCandidate's Answer: ${answer || "(No answer provided)"}\n\nEvaluate and return ONLY valid JSON (no markdown, no backticks) in this exact format:\n{\n  "score": <number 1-10>,\n  "strengths": ["point 1", "point 2"],\n  "weaknesses": ["point 1", "point 2"],\n  "improvedAnswer": "A concise model answer in 3-4 sentences."\n}`;
+  return `You are a strict technical interviewer evaluating a ${role} candidate with ${experience} experience.\n\nQuestion: ${question}\nCandidate's Answer: ${answer || "(No answer provided)"}\n\nEvaluate the answer according to these criteria:\n1. Relevance (0-3): Does the answer actually answer the question?\n2. Technical Accuracy (0-3): Are the facts technically correct?\n3. Detail and Depth (0-2): Does the answer provide sufficient explanation?\n4. Communication (0-2): Is the answer clear and structured?\n\nScoring rules:\n0-2: Completely irrelevant, single-word answers, greetings, nonsense, or empty responses.\n3-4: Very weak answer with minimal understanding.\n5-6: Average answer with partial understanding.\n7-8: Good answer with strong understanding.\n9-10: Excellent answer that is comprehensive and technically accurate.\n\nImportant rules:\n- If the answer contains fewer than 5 meaningful words, score at most 2/10.\n- If the answer does not address the question, score at most 3/10.\n- If the answer is only a greeting such as \"hi\", \"hello\", \"yes\", \"no\", or \"okay\", score 0/10.\n- Never inflate scores.\n- Be critical.\n- Behave like a real interviewer at a top technology company.\n\nReturn JSON only in this exact format:\n{\n  \"score\": <number 1-10>,\n  \"strengths\": [\"point 1\", \"point 2\"],\n  \"improvements\": [\"point 1\", \"point 2\"],\n  \"improvedAnswer\": \"A concise model answer in 3-4 sentences.\"\n}`;
 }
 
 function buildReportPrompt(role, experience, qas) {
@@ -515,36 +515,9 @@ function InterviewPage({ session, questionIndex, question, loadingQuestion, onSu
 }
 
 // FEEDBACK PAGE
-function FeedbackPage({ questionIndex, question, feedback, onNext, isLast, spokenFeedbackRef }) {
+function FeedbackPage({ questionIndex, question, feedback, onNext, isLast }) {
   const score = feedback?.score ?? 0;
   const barColor = score >= 7 ? "from-emerald-500 to-teal-500" : score >= 4 ? "from-amber-500 to-orange-500" : "from-red-500 to-rose-500";
-
-  useEffect(() => {
-    if (!feedback) return;
-    if (spokenFeedbackRef.current === questionIndex) return;
-
-    const strengths = feedback.strengths || [];
-    const weaknesses = feedback.weaknesses || [];
-    const strengthSummary = strengths[0]
-      ? `Your answer was strong in ${strengths[0].toLowerCase()}.`
-      : "Your answer showed promise.";
-    const improvementSummary = weaknesses[0]
-      ? `It would improve with ${weaknesses[0].toLowerCase()}.`
-      : "A bit more structure would help.";
-
-    const spokenFeedback = `
-I would rate your answer ${score} out of 10.
-${strengthSummary} ${improvementSummary}
-Let's move to the next question.
-`;
-
-    async function speakFeedback() {
-      await speak(spokenFeedback);
-      spokenFeedbackRef.current = questionIndex;
-    }
-
-    speakFeedback();
-  }, [feedback, score, questionIndex, spokenFeedbackRef]);
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4 py-10">
@@ -735,7 +708,10 @@ export default function App() {
 
     setCurrentQuestion(question);
 
-    console.log("SPEAKING:", question);
+    console.log("QUESTION SPEAK:", question);
+    console.log("speechSynthesis.speaking:", window.speechSynthesis.speaking);
+    console.log("speechSynthesis.pending:", window.speechSynthesis.pending);
+    console.log("speechSynthesis.paused:", window.speechSynthesis.paused);
 
     setTimeout(() => {
       if (idx === 0) {
@@ -769,24 +745,65 @@ export default function App() {
   }
 
   async function handleAnswerSubmit(answer) {
-    
+    const feedbackKey = `${questionIndex}-${currentQuestion}`;
+
+    if (spokenFeedbackRef.current === feedbackKey) {
+      return;
+    }
+
     let feedback = null;
     try {
       const raw = await askGemini(buildFeedbackPrompt(session.role, session.exp, currentQuestion, answer));
       feedback = JSON.parse(raw.replace(/```json|```/g, "").trim());
     } catch (error) {
-  console.error("FEEDBACK ERROR:", error);
+      console.error("FEEDBACK ERROR:", error);
 
-  feedback = {
-    score: 0,
-    strengths: ["Error"],
-    weaknesses: ["Check browser console"],
-    improvedAnswer: error?.message || "Unknown error"
-  };
-}
-    setQas((prev) => [...prev, { question: currentQuestion, answer, feedback }]);
+      feedback = {
+        score: 0,
+        strengths: ["Error"],
+        improvements: ["Check browser console"],
+        weaknesses: ["Check browser console"],
+        improvedAnswer: error?.message || "Unknown error"
+      };
+    }
+
+    const evaluation = {
+      ...feedback,
+      strengths: feedback?.strengths || [],
+      improvements: feedback?.improvements || feedback?.weaknesses || [],
+      weaknesses: feedback?.improvements || feedback?.weaknesses || [],
+      improvedAnswer: feedback?.improvedAnswer || "A stronger answer would include a more relevant and technically accurate response."
+    };
+
+    const score = Number(evaluation?.score ?? 0);
+    let spoken = "";
+
+    if (score <= 2) {
+      spoken = "This answer did not adequately address the question.";
+    } else if (score <= 4) {
+      spoken = "This answer demonstrates limited understanding and needs significant improvement.";
+    } else if (score <= 6) {
+      spoken = "Your answer shows partial understanding but requires more technical detail.";
+    } else if (score <= 8) {
+      spoken = "Your answer was good, although more examples would strengthen it.";
+    } else if (score >= 9) {
+      spoken = "This was a strong and well-structured answer.";
+    }
+
+    spoken += ` I would rate this answer ${score} out of 10.`;
+
+    const spokenFeedback = spoken;
+    console.log("EVALUATION SPEAK:", spokenFeedback);
+    console.log("speechSynthesis.speaking:", window.speechSynthesis.speaking);
+    console.log("speechSynthesis.pending:", window.speechSynthesis.pending);
+    console.log("speechSynthesis.paused:", window.speechSynthesis.paused);
+
+    spokenFeedbackRef.current = feedbackKey;
+    setQas((prev) => [...prev, { question: currentQuestion, answer, feedback: evaluation }]);
     setPreviousQuestions((prev) => [...prev, currentQuestion]);
     setPage("feedback");
+    window.speechSynthesis.cancel();
+    await speak(spokenFeedback);
   }
 
   async function handleNext() {
@@ -864,7 +881,7 @@ export default function App() {
           <InterviewPage session={session} questionIndex={questionIndex} question={currentQuestion} loadingQuestion={loadingQuestion} onSubmit={handleAnswerSubmit} />
         )}
         {page === "feedback" && lastQa && (
-          <FeedbackPage questionIndex={questionIndex} question={lastQa.question} feedback={lastQa.feedback} onNext={handleNext} isLast={questionIndex >= TOTAL_QUESTIONS - 1} spokenFeedbackRef={spokenFeedbackRef} />
+          <FeedbackPage questionIndex={questionIndex} question={lastQa.question} feedback={lastQa.feedback} onNext={handleNext} isLast={questionIndex >= TOTAL_QUESTIONS - 1} />
         )}
         {page === "report" && (
           <ReportPage session={session} report={report} onRestart={handleRestart} />
