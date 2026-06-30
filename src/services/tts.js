@@ -21,8 +21,21 @@ export function speak(text) {
       utterance.voice = rishi;
     }
 
-    // Keep Apple's default settings
-    window.speechSynthesis.speak(utterance);
+   window.dispatchEvent(
+  new CustomEvent("avatar-speaking", {
+    detail: true,
+  })
+);
+
+utterance.onend = () => {
+  window.dispatchEvent(
+    new CustomEvent("avatar-speaking", {
+      detail: false,
+    })
+  );
+};
+
+window.speechSynthesis.speak(utterance);
   };
 
   if (window.speechSynthesis.getVoices().length > 0) {

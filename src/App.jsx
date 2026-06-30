@@ -1,13 +1,108 @@
 import { useState, useEffect, useRef } from "react";
+import InterviewerAvatar from "./components/InterviewerAvatar";
 import { speak } from "./services/tts";
 import { askGemini } from "./services/gemini";
 
 const JOB_ROLES = ["Full Stack Developer","Frontend Developer","Backend Developer","Java Developer","Data Analyst","Data Scientist"];
 const EXPERIENCE_LEVELS = ["Fresher","1-3 Years","3-5 Years","5+ Years"];
 const TOTAL_QUESTIONS = 5;
+const INTERVIEW_STAGES = {
+  0: "INTRODUCTION",
+  1: "BACKGROUND",
+  2: "TECH_STACK",
+  3: "PROJECTS",
+  4: "TECHNICAL",
+};
 
-function buildQuestionPrompt(role, experience, questionIndex) {
-  return `You are an expert technical interviewer. Generate a single interview question for a ${role} position with ${experience} experience level. This is question ${questionIndex + 1} of ${TOTAL_QUESTIONS}. Make it ${questionIndex < 2 ? "introductory/behavioral" : questionIndex < 4 ? "technical" : "advanced/scenario-based"}. Return ONLY the question text, nothing else.`;
+const STORAGE_KEY = "ai-interview-session";
+
+function saveInterviewSession(payload) {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch (error) {
+    console.warn("Could not save interview session:", error);
+  }
+}
+
+function loadInterviewSession() {
+  if (typeof window === "undefined" || !window.localStorage) return null;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch (error) {
+    console.warn("Could not load interview session:", error);
+    return null;
+  }
+}
+
+function clearInterviewSession() {
+  if (typeof window === "undefined" || !window.localStorage) return;
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch (error) {
+    console.warn("Could not clear interview session:", error);
+  }
+}
+
+function buildQuestionPrompt(role, experience, questionIndex, previousQuestions = []) {
+  if (questionIndex === 0) {
+    return `You are a professional technical interviewer.
+
+Your task is to ask the candidate to introduce themselves.
+
+RULES:
+- Ask ONLY for self introduction.
+- Do not ask about projects.
+- Do not ask about technologies.
+- Do not ask about experience.
+- Do not greet the candidate.
+- Return only one sentence.
+
+Choose one of the following:
+- Please introduce yourself.
+- Tell me about yourself.
+- Could you briefly introduce yourself?
+
+Return only the question text.
+`;
+  }
+
+  const stage = previousQuestions.length === 0 ? "INTRODUCTION" : INTERVIEW_STAGES[questionIndex] || "TECHNICAL";
+  const stageInstructions = {
+    INTRODUCTION: "Ask ONLY for self introduction. Example: Please introduce yourself.",
+    BACKGROUND: "Ask about education, motivation, or career background. Never ask self introduction again.",
+    TECH_STACK: "Ask about programming languages, frameworks, tools, or technologies used. Never ask about background again.",
+    PROJECTS: "Ask about one project or practical experience. Never ask about technologies generally.",
+    TECHNICAL: "Ask exactly one technical question related to the selected role.",
+  };
+
+  return `You are a professional technical interviewer.
+
+RULES:
+- Ask EXACTLY ONE question.
+- Never greet the candidate.
+- Never say "Good morning", "Hello", or similar.
+- Never ask multiple questions.
+- The following questions have already been asked.
+- You MUST NOT ask the same question,
+  a paraphrased version,
+  or a semantically similar question.
+- Keep the question length between 5 and 15 words.
+- Return ONLY the question text.
+- Do not add explanations.
+- Do not add numbering.
+- Do not add follow-up questions.
+
+INTERVIEW STAGE: ${stage}
+${stageInstructions[stage]}
+
+PREVIOUS QUESTIONS:
+${previousQuestions.length > 0 ? previousQuestions.join("\n") : "None"}
+
+If the generated question is too similar to any previous question, regenerate it once.
+`;
 }
 
 function buildFeedbackPrompt(role, experience, question, answer) {
@@ -194,18 +289,6 @@ function SetupPage({ onStart }) {
             </svg>
             Begin Interview
           </GradientButton>
-                            <button
-            type="button"
-            className="w-full mt-3 bg-blue-600 text-white py-3 rounded-xl font-bold"
-            onClick={() => {
-              console.log("BUTTON CLICKED");
-              speak(
-                "Hello Vivek. Welcome to your AI interview. Let's begin."
-              );
-            }}
-          >
-            TEST VOICE
-          </button>
         </GlassCard>
       </div>
     </div>
@@ -224,7 +307,14 @@ function InterviewPage({ session, questionIndex, question, loadingQuestion, onSu
   const recognitionRef = useRef(null);
   const finalRef = useRef("");
 
-  useEffect(() => { setAnswer(""); setInterim(""); setVoiceError(""); finalRef.current = ""; }, [question]);
+  useEffect(() => {
+    // Reset voice form state when the interview question changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAnswer("");
+    setInterim("");
+    setVoiceError("");
+    finalRef.current = "";
+  }, [question]);
   useEffect(() => () => recognitionRef.current?.stop(), []);
 
   function startRecording() {
@@ -289,6 +379,11 @@ function InterviewPage({ session, questionIndex, question, loadingQuestion, onSu
           </div>
           <ProgressBar current={questionIndex + 1} total={TOTAL_QUESTIONS} />
         </div>
+
+        {/* AI Interviewer Avatar */}
+<div className="flex justify-center py-2">
+  <InterviewerAvatar />
+</div>
 
         {/* Question */}
         <GlassCard className="p-6">
@@ -420,9 +515,37 @@ function InterviewPage({ session, questionIndex, question, loadingQuestion, onSu
 }
 
 // FEEDBACK PAGE
-function FeedbackPage({ questionIndex, question, answer, feedback, onNext, isLast }) {
+function FeedbackPage({ questionIndex, question, feedback, onNext, isLast, spokenFeedbackRef }) {
   const score = feedback?.score ?? 0;
   const barColor = score >= 7 ? "from-emerald-500 to-teal-500" : score >= 4 ? "from-amber-500 to-orange-500" : "from-red-500 to-rose-500";
+
+  useEffect(() => {
+    if (!feedback) return;
+    if (spokenFeedbackRef.current === questionIndex) return;
+
+    const strengths = feedback.strengths || [];
+    const weaknesses = feedback.weaknesses || [];
+    const strengthSummary = strengths[0]
+      ? `Your answer was strong in ${strengths[0].toLowerCase()}.`
+      : "Your answer showed promise.";
+    const improvementSummary = weaknesses[0]
+      ? `It would improve with ${weaknesses[0].toLowerCase()}.`
+      : "A bit more structure would help.";
+
+    const spokenFeedback = `
+I would rate your answer ${score} out of 10.
+${strengthSummary} ${improvementSummary}
+Let's move to the next question.
+`;
+
+    async function speakFeedback() {
+      await speak(spokenFeedback);
+      spokenFeedbackRef.current = questionIndex;
+    }
+
+    speakFeedback();
+  }, [feedback, score, questionIndex, spokenFeedbackRef]);
+
   return (
     <div className="min-h-screen flex items-center justify-center px-4 py-10">
       <div className="w-full max-w-2xl space-y-5">
@@ -564,14 +687,48 @@ export default function App() {
   const [currentQuestion, setCurrentQuestion] = useState("");
   const [loadingQuestion, setLoadingQuestion] = useState(false);
   const [qas, setQas] = useState([]);
+  const [previousQuestions, setPreviousQuestions] = useState([]);
   const [report, setReport] = useState(null);
+  const spokenFeedbackRef = useRef(null);
+
+  useEffect(() => {
+    const saved = loadInterviewSession();
+    if (!saved) return;
+
+    setPage(saved.page || "landing");
+    setSession(saved.session ?? null);
+    setQuestionIndex(saved.questionIndex ?? 0);
+    setCurrentQuestion(saved.currentQuestion ?? "");
+    setLoadingQuestion(saved.loadingQuestion ?? false);
+    setQas(saved.qas ?? []);
+    setPreviousQuestions(saved.previousQuestions ?? []);
+    setReport(saved.report ?? null);
+  }, []);
+
+  useEffect(() => {
+    if (page === "report") {
+      clearInterviewSession();
+      return;
+    }
+
+    saveInterviewSession({
+      page,
+      session,
+      questionIndex,
+      currentQuestion,
+      loadingQuestion,
+      qas,
+      previousQuestions,
+      report,
+    });
+  }, [page, session, questionIndex, currentQuestion, loadingQuestion, qas, previousQuestions, report]);
 
    async function fetchQuestion(idx, sess) {
   setLoadingQuestion(true);
 
   try {
     const q = await askGemini(
-      buildQuestionPrompt(sess.role, sess.exp, idx)
+      buildQuestionPrompt(sess.role, sess.exp, idx, previousQuestions)
     );
 
     const question = q.trim();
@@ -581,9 +738,11 @@ export default function App() {
     console.log("SPEAKING:", question);
 
     setTimeout(() => {
-      speak(
-        `Okay ${sess.name}. Here is your next interview question. ${question}`
-      );
+      if (idx === 0) {
+        speak(`Welcome to your interview. ${question}`);
+      } else {
+        speak(question);
+      }
     }, 1000);
 
   } catch (error) {
@@ -596,7 +755,16 @@ export default function App() {
 }
 
   function handleSetupStart(info) {
-    setSession(info); setQas([]); setQuestionIndex(0); setPage("interview");
+    clearInterviewSession();
+    spokenFeedbackRef.current = null;
+    setSession(info);
+    setQas([]);
+    setPreviousQuestions([]);
+    setQuestionIndex(0);
+    setCurrentQuestion("");
+    setLoadingQuestion(false);
+    setReport(null);
+    setPage("interview");
     fetchQuestion(0, info);
   }
 
@@ -617,6 +785,7 @@ export default function App() {
   };
 }
     setQas((prev) => [...prev, { question: currentQuestion, answer, feedback }]);
+    setPreviousQuestions((prev) => [...prev, currentQuestion]);
     setPage("feedback");
   }
 
@@ -655,7 +824,16 @@ export default function App() {
   }
 
   function handleRestart() {
-    setPage("landing"); setSession(null); setQas([]); setQuestionIndex(0); setCurrentQuestion(""); setReport(null);
+    clearInterviewSession();
+    spokenFeedbackRef.current = null;
+    setPage("landing");
+    setSession(null);
+    setQas([]);
+    setPreviousQuestions([]);
+    setQuestionIndex(0);
+    setCurrentQuestion("");
+    setLoadingQuestion(false);
+    setReport(null);
   }
 
   const lastQa = qas[qas.length - 1];
@@ -686,7 +864,7 @@ export default function App() {
           <InterviewPage session={session} questionIndex={questionIndex} question={currentQuestion} loadingQuestion={loadingQuestion} onSubmit={handleAnswerSubmit} />
         )}
         {page === "feedback" && lastQa && (
-          <FeedbackPage questionIndex={questionIndex} question={lastQa.question} answer={lastQa.answer} feedback={lastQa.feedback} onNext={handleNext} isLast={questionIndex >= TOTAL_QUESTIONS - 1} />
+          <FeedbackPage questionIndex={questionIndex} question={lastQa.question} feedback={lastQa.feedback} onNext={handleNext} isLast={questionIndex >= TOTAL_QUESTIONS - 1} spokenFeedbackRef={spokenFeedbackRef} />
         )}
         {page === "report" && (
           <ReportPage session={session} report={report} onRestart={handleRestart} />
