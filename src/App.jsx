@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { speak } from "./services/tts";
 import { askGemini } from "./services/gemini";
 
 const JOB_ROLES = ["Full Stack Developer","Frontend Developer","Backend Developer","Java Developer","Data Analyst","Data Scientist"];
@@ -36,6 +37,8 @@ function GradientButton({ onClick, disabled, children, variant = "primary", clas
   };
   return <button onClick={onClick} disabled={disabled} className={`${base} ${styles[variant]} ${className}`}>{children}</button>;
 }
+
+
 
 function ScoreRing({ score, label, color = "violet" }) {
   const circumference = 2 * Math.PI * 38;
@@ -156,7 +159,7 @@ function SetupPage({ onStart }) {
         <GlassCard className="p-6 space-y-5">
           <div>
             <label className="block text-xs text-white/50 mb-2 font-medium uppercase tracking-wider">Your Name</label>
-            <input type="text" placeholder="e.g. Priya Sharma" value={name} onChange={(e) => setName(e.target.value)}
+            <input type="text" placeholder="e.g. Vivek" value={name} onChange={(e) => setName(e.target.value)}
               className="w-full border border-white/10 rounded-xl px-4 py-3 text-white text-sm placeholder-white/20 focus:outline-none focus:border-violet-500/60 transition-colors"
               style={{ background: "rgba(255,255,255,0.05)" }} />
           </div>
@@ -191,6 +194,18 @@ function SetupPage({ onStart }) {
             </svg>
             Begin Interview
           </GradientButton>
+                            <button
+            type="button"
+            className="w-full mt-3 bg-blue-600 text-white py-3 rounded-xl font-bold"
+            onClick={() => {
+              console.log("BUTTON CLICKED");
+              speak(
+                "Hello Vivek. Welcome to your AI interview. Let's begin."
+              );
+            }}
+          >
+            TEST VOICE
+          </button>
         </GlassCard>
       </div>
     </div>
@@ -551,20 +566,34 @@ export default function App() {
   const [qas, setQas] = useState([]);
   const [report, setReport] = useState(null);
 
-  async function fetchQuestion(idx, sess) {
-    setLoadingQuestion(true);
-    try {
-      const q = await askGemini(
-  buildQuestionPrompt(sess.role, sess.exp, idx)
-);
-      setCurrentQuestion(q.trim());
-    } catch (error) {
-  console.error("QUESTION ERROR:", error);
+   async function fetchQuestion(idx, sess) {
+  setLoadingQuestion(true);
 
-  setCurrentQuestion("QUESTION GENERATION FAILED");
-}
-    setLoadingQuestion(false);
+  try {
+    const q = await askGemini(
+      buildQuestionPrompt(sess.role, sess.exp, idx)
+    );
+
+    const question = q.trim();
+
+    setCurrentQuestion(question);
+
+    console.log("SPEAKING:", question);
+
+    setTimeout(() => {
+      speak(
+        `Okay ${sess.name}. Here is your next interview question. ${question}`
+      );
+    }, 1000);
+
+  } catch (error) {
+    console.error("QUESTION ERROR:", error);
+
+    setCurrentQuestion("QUESTION GENERATION FAILED");
   }
+
+  setLoadingQuestion(false);
+}
 
   function handleSetupStart(info) {
     setSession(info); setQas([]); setQuestionIndex(0); setPage("interview");
