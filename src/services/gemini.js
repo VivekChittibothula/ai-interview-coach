@@ -1,3 +1,5 @@
+import { parseJsonResponse } from "../lib/api";
+
 export async function askGemini(prompt) {
   const response = await fetch("/api/interview", {
     method: "POST",
@@ -7,10 +9,6 @@ export async function askGemini(prompt) {
     body: JSON.stringify({ prompt }),
   });
 
-  if (!response.ok) {
-    throw new Error(`API error: ${response.statusText}`);
-  }
-
-  const data = await response.json();
+  const data = await parseJsonResponse(response);
   return data.text;
 }
